@@ -1,0 +1,474 @@
+import { useState, useEffect } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useParams, useLocation } from "wouter";
+import { useAuth } from "@/hooks/use-auth";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { z } from "zod";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+
+import { Navbar } from "@/components/navbar";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { format } from "date-fns";
+import { cn } from "@/lib/utils";
+import { Loader2, MapPin, Computer, Users, DollarSign, Clock, Calendar as CalendarIcon, ArrowLeft, Star } from "lucide-react";
+
+// Booking form schema
+const bookingSchema = z.object({
+  date: z.date({
+    required_error: "Lütfen bir tarih seçin",
+  }),
+  timeSlot: z.string({
+    required_error: "Lütfen bir zaman dilimi seçin",
+  }),
+  duration: z.coerce.number().min(1, "Süre en az 1 saat olmalıdır").max(8, "Süre en fazla 8 saat olabilir"),
+  message: z.string().optional(),
+});
+
+type BookingFormValues = z.infer<typeof bookingSchema>;
+
+export default function TeacherProfile() {
+  const params = useParams<{ id: string }>();
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const [, navigate] = useLocation();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Fetch teacher profile by ID
+  const {
+    data: profile,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: [`/api/teacher-profile/${params.id}`],
+    queryFn: async () => {
+      return fetch(`/api/teacher-profile/${params.id}`, {
+        credentials: "include",
+      }).then((res) => {
+        if (!res.ok) throw new Error("Failed to fetch teacher profile");
+        return res.json();
+      });
+    },
+  });
+
+  // Booking form setup
+  const form = useForm<BookingFormValues>({
+    resolver: zodResolver(bookingSchema),
+    defaultValues: {
+      duration: 1,
+      message: "",
+    },
+  });
+
+  // Calculate time slots based on teacher availability
+  const getAvailableTimeSlots = () => {
+    if (!profile || !profile.availability) return [];
+    
+    const timeSlots = {
+      morning: "09:00 - 12:00",
+      afternoon: "13:00 - 17:00",
+      evening: "18:00 - 21:00",
+    };
+    
+    return profile.availability.timeSlots.map(slot => ({
+      value: slot,
+      label: timeSlots[slot],
+    }));
+  };
+
+  // Calculate total price based on duration
+  const calculateTotalPrice = (duration: number) => {
+    if (!profile) return 0;
+    
+    const lessonPrice = profile.hourlyRate * duration;
+    const platformFee = Math.round(lessonPrice * 0.1); // 10% platform fee
+    
+    return {
+      lessonPrice,
+      platformFee,
+      total: lessonPrice + platformFee,
+    };
+  };
+  
+  const { lessonPrice, platformFee, total } = calculateTotalPrice(form.watch("duration") || 1);
+
+  // Handle booking submission
+  const handleBookingSubmit = async (data: BookingFormValues) => {
+    if (!user || !profile) return;
+    
+    setIsSubmitting(true);
+    
+    try {
+      // Format date and time
+      const bookingDate = new Date(data.date);
+      const [startTime] = data.timeSlot.split(" - ")[0].split(":");
+      bookingDate.setHours(parseInt(startTime), 0, 0, 0);
+      
+      // Create booking data
+      const bookingData = {
+        teacherId: profile.userId,
+        date: bookingDate.toISOString(),
+        duration: data.duration,
+        lessonType: profile.lessonType === "both" ? "online" : profile.lessonType, // Default to online if both are available
+        message: data.message || "",
+        totalPrice: total,
+      };
+      
+      // Submit booking
+      await apiRequest("POST", "/api/bookings", bookingData);
+      
+      toast({
+        title: "Rezervasyon başarılı",
+        description: `${profile.teacher.fullName} ile rezervasyonunuz gönderildi ve onay bekliyor.`,
+      });
+      
+      // Redirect to student dashboard
+      setTimeout(() => {
+        navigate("/student/dashboard");
+      }, 1500);
+    } catch (error) {
+      toast({
+        title: "Rezervasyon başarısız",
+        description: error instanceof Error ? error.message : "Bilinmeyen bir hata oluştu",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Format days of week for display
+  const formatAvailableDays = () => {
+    if (!profile || !profile.availability || !profile.availability.days) return "Belirtilmemiş";
+    
+    const daysMap = {
+      monday: "Pazartesi",
+      tuesday: "Salı",
+      wednesday: "Çarşamba",
+      thursday: "Perşembe",
+      friday: "Cuma",
+      saturday: "Cumartesi",
+      sunday: "Pazar",
+    };
+    
+    return profile.availability.days.map(day => daysMap[day]).join(", ");
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="flex flex-col items-center space-y-4">
+          <Loader2 className="h-12 w-12 animate-spin text-primary" />
+          <p className="text-lg font-medium text-gray-700 dark:text-gray-300">Öğretmen profili yükleniyor...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !profile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Hata</CardTitle>
+            <CardDescription>
+              Öğretmen profili yüklenemedi. Öğretmen mevcut olmayabilir veya bir ağ hatası oluşmuş olabilir.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => navigate("/student/dashboard")}>
+              Panele Geri Dön
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Check if the current user is the teacher viewing their own profile
+  const isOwnProfile = user?.id === profile.userId;
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      <Navbar userRole={user?.role || "student"} />
+      
+      <main className="container mx-auto py-6 px-4">
+        <Button
+          variant="ghost"
+          className="mb-6"
+          onClick={() => navigate(user?.role === "student" ? "/student/dashboard" : "/teacher/dashboard")}
+        >
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Panele Geri Dön
+        </Button>
+        
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Teacher Profile Information */}
+          <div className="lg:col-span-2 space-y-6">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex flex-col md:flex-row md:items-start gap-6">
+                  <Avatar className="h-24 w-24">
+                    <AvatarFallback className="text-2xl">
+                      {profile.teacher.fullName.split(" ").map(name => name[0]).join("")}
+                    </AvatarFallback>
+                  </Avatar>
+                  
+                  <div className="flex-grow">
+                    <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">
+                      {profile.teacher.fullName}
+                    </h2>
+                    
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      <Badge variant="secondary" className="bg-primary/10 text-primary hover:bg-primary/20">
+                        {profile.subject}
+                      </Badge>
+                      <Badge variant="outline" className="flex items-center gap-1">
+                        <MapPin className="h-3 w-3" /> {profile.location}
+                      </Badge>
+                      <Badge variant="outline" className="flex items-center gap-1">
+                        {profile.lessonType === "online" ? (
+                          <><Computer className="h-3 w-3" /> Online</>
+                        ) : profile.lessonType === "face-to-face" ? (
+                          <><Users className="h-3 w-3" /> Yüz Yüze</>
+                        ) : (
+                          <><Computer className="h-3 w-3" /> <Users className="h-3 w-3" /> Online & Yüz Yüze</>
+                        )}
+                      </Badge>
+                    </div>
+                    
+                    <div className="inline-block bg-gray-100 dark:bg-gray-800 rounded-lg p-3 mb-4">
+                      <div className="text-2xl font-bold text-primary">
+                        {profile.hourlyRate}₺ <span className="text-sm font-normal text-gray-500 dark:text-gray-400">/ saat</span>
+                      </div>
+                    </div>
+                    
+                    <p className="text-gray-700 dark:text-gray-300 mb-4 whitespace-pre-line">
+                      {profile.bio}
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-xl flex items-center">
+                  <Clock className="h-5 w-5 mr-2" />
+                  Müsait Zamanlar
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <h3 className="font-medium mb-2">Günler</h3>
+                    <p className="text-gray-700 dark:text-gray-300">
+                      {formatAvailableDays()}
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <h3 className="font-medium mb-2">Saatler</h3>
+                    <div className="space-y-2">
+                      {profile.availability && profile.availability.timeSlots && profile.availability.timeSlots.map((slot) => {
+                        const timeSlots = {
+                          morning: "09:00 - 12:00",
+                          afternoon: "13:00 - 17:00",
+                          evening: "18:00 - 21:00",
+                        };
+                        
+                        return (
+                          <div key={slot} className="text-gray-700 dark:text-gray-300">
+                            {timeSlots[slot]}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+          
+          {/* Booking Form - Only show for students and not for the teacher viewing their own profile */}
+          {user?.role === "student" && !isOwnProfile && (
+            <div>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-xl flex items-center">
+                    <CalendarIcon className="h-5 w-5 mr-2" />
+                    Ders Rezervasyonu
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Form {...form}>
+                    <form onSubmit={form.handleSubmit(handleBookingSubmit)} className="space-y-4">
+                      <FormField
+                        control={form.control}
+                        name="date"
+                        render={({ field }) => (
+                          <FormItem className="flex flex-col">
+                            <FormLabel>Tarih</FormLabel>
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <FormControl>
+                                  <Button
+                                    variant={"outline"}
+                                    className={cn(
+                                      "w-full pl-3 text-left font-normal",
+                                      !field.value && "text-muted-foreground"
+                                    )}
+                                  >
+                                    {field.value ? (
+                                      format(field.value, "PPP")
+                                    ) : (
+                                      <span>Tarih seçin</span>
+                                    )}
+                                    <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
+                                  </Button>
+                                </FormControl>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-0" align="start">
+                                <Calendar
+                                  mode="single"
+                                  selected={field.value}
+                                  onSelect={field.onChange}
+                                  disabled={(date) => {
+                                    // Disable dates in the past
+                                    return date < new Date(new Date().setHours(0, 0, 0, 0));
+                                  }}
+                                />
+                              </PopoverContent>
+                            </Popover>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      
+                      <FormField
+                        control={form.control}
+                        name="timeSlot"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Saat</FormLabel>
+                            <Select onValueChange={field.onChange} defaultValue={field.value}>
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Saat seçin" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                {getAvailableTimeSlots().map((slot) => (
+                                  <SelectItem key={slot.value} value={slot.label}>
+                                    {slot.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      
+                      <FormField
+                        control={form.control}
+                        name="duration"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Süre (saat)</FormLabel>
+                            <FormControl>
+                              <Input type="number" min="1" max="8" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      
+                      <FormField
+                        control={form.control}
+                        name="message"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Mesaj (isteğe bağlı)</FormLabel>
+                            <FormControl>
+                              <Textarea
+                                placeholder="Özel konular veya sorular..."
+                                className="resize-none h-20"
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      
+                      <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-gray-700 dark:text-gray-300">Ders Ücreti</span>
+                          <span className="font-medium">{lessonPrice}₺</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-700 dark:text-gray-300">Platform Ücreti</span>
+                          <span className="font-medium">{platformFee}₺</span>
+                        </div>
+                        <Separator className="my-2" />
+                        <div className="flex justify-between">
+                          <span className="font-medium">Toplam</span>
+                          <span className="font-bold text-lg">{total}₺</span>
+                        </div>
+                      </div>
+                      
+                      <Button type="submit" className="w-full" disabled={isSubmitting}>
+                        {isSubmitting ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            İşleniyor...
+                          </>
+                        ) : "Dersi Rezerve Et ve Öde"}
+                      </Button>
+                    </form>
+                  </Form>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+          
+          {/* Profile Options - For teacher viewing their own profile */}
+          {isOwnProfile && (
+            <div>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-xl">Profiliniz</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-gray-700 dark:text-gray-300">
+                    Profiliniz öğrencilere bu şekilde görünüyor. Hizmetlerinizi ve uygunluk durumunuzu
+                    güncellemek için profil bilgilerinizi düzenleyebilirsiniz.
+                  </p>
+                  
+                  <Button 
+                    className="w-full"
+                    onClick={() => navigate("/teacher/setup")}
+                  >
+                    Profili Düzenle
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
